@@ -1,0 +1,8 @@
+process_object <- function(seurat_obj, normalization_method = "LogNormalize", scale_factor = 10000, selection_method = "vst", n_features = 2000) {
+  
+  # Normalize the data and find variable features
+  seurat_obj <- NormalizeData(seurat_obj, normalization.method = normalization_method, scale.factor = scale_factor)
+  seurat_obj <- FindVariableFeatures(seurat_obj, selection.method = selection_method, nfeatures = n_features)
+  
+  return(seurat_obj)
+}

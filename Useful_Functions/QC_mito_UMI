@@ -1,0 +1,9 @@
+calculate_QC <- function(seurat_object) {
+  # Calculate percent.mito
+  seurat_object[["percent.mito"]] <- PercentageFeatureSet(seurat_object, pattern = "^MT")
+  
+  # Calculate log10GenesPerUMI
+  seurat_object[["log10GenesPerUMI"]] <- log10(seurat_object$nFeature_RNA) / log10(seurat_object$nCount_RNA)
+  
+  return(seurat_object)
+}

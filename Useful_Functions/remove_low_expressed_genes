@@ -1,0 +1,12 @@
+remove_low <- function(seurat_object) {
+      # Identify low expressed genes and those in >10 cells:
+      gene_counts <- GetAssayData(object = seurat_object, slot = "counts")
+      nonzero_counts <- gene_counts > 0
+      genes_above_cutoff <- Matrix::rowSums(nonzero_counts) >= 10
+      filtered_counts <- gene_counts[genes_above_cutoff, ]
+      
+      # Create new Seurat object only with genes above cutoff
+      seurat_object <- CreateSeuratObject(filtered_counts, meta.data = seurat_object@meta.data)
+  
+      return(seurat_object)
+}

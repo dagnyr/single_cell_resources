@@ -1,0 +1,15 @@
+minpc_calc <- function(seurat_object, variance_threshold = 90, difference_threshold = 0.1) {
+  
+sd <- seurat_object[["pca"]]@stdev
+sd_sum <- sum(seurat_object[["pca"]]@stdev)
+percent_sd <- (sd / sd_sum) * 100
+cumsum <- cumsum(percent_sd)
+
+co1 <- which(cumsum > variance_threshold & percent_sd < 5)[1]
+co2 <- sort(which((percent_sd[1:length(percent_sd) - 1] - 
+                       percent_sd[2:length(percent_sd)]) > difference_threshold), 
+              decreasing = T)[1] + 1
+min.pc <- min(co1, co2)
+  
+  return(min.pc)
+}
