@@ -1,0 +1,425 @@
+---
+title: "Single Cell Analysis Template"
+output: html_notebook
+---
+
+[**The below workflow will help you with the following tasks:**]{.underline}
+
+1.  Loading your datasets and merging them.
+
+2.  Completing QC (cell cycle regression, removing low expressed genes, removing poor quality cells, etc.).
+
+3.  Completing data scaling, normalization, and variable feature analysis.
+
+4.  Completing batch effect correction w/ harmony.
+
+5.  Generating a UMAP and various other plots.
+
+There are also some sections for misc. tasks you may want to complete, like making new metadata columns based on patients, clusters, creating a new dataset with only a particular cell population for further analysis, etc.
+
+# Dataset Loading
+
+Below, packages used in this workflow are loaded. Feel free to add any additional libraries.
+
+```{r}
+library(Matrix)
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(cowplot)
+```
+
+### Loading Your Data
+
+```{r}
+# Load UMI count matrix:
+mtx1 <- readMM("/Exp_data_UMIcounts.mtx")
+# put your UMI or TPM count matrix file location above
+
+# Import annotation/metadata:
+annotation1 <- read.csv("/Users/dagnyreese/Desktop/thesis/Breast_Part1/Breast_Data/Data_Gao2021_Breast/Breast/Cells.csv")
+# put your metadata matrix file location above
+
+# Import gene names and remove quotations:
+genenames1 <- readLines("/Users/dagnyreese/Desktop/thesis/Breast_Part1/Breast_Data/Data_Gao2021_Breast/Breast/Genes.txt")
+# put your genenames .txt file above. Open the file to check if the names are in quotations or not. If they are, uncomment the line below:
+# genenames1 <- gsub("\"", "", genenames1)
+
+# Make sure the features and cell names are included:
+colnames(mtx1) <- annotation1[,1]
+rownames(annotation1) <- annotation1[,1]
+rownames(mtx1) <- genenames1
+
+# Create Seurat object - replace the names with whatever you want!
+data1 <- CreateSeuratObject(
+  mtx1,
+  project = "data1",
+  meta.data = annotation1
+)
+
+```
+
+## Merge Datasets
+
+If you have used multiple datasets and would like to merge them, use the following code.
+
+```{r}
+# Uncomment line below by remove the hashtag at the beginning and replace the dataset names with your datasets.
+
+#dataset1 <- merge(data1, y = c(data2, data3), add.cell.ids = c("dataset1", "dataset2", "dataset3"), project = "data_analysis")
+
+# Change the dataset IDs to whatever you'd like, they will be added as a metadata column.
+```
+
+# Functions
+
+These functions are prepared to do basic tasks like remove low expressed genes or to calculate minimum significant principle components.
+
+### Calculate QC Metrics
+
+```{r}
+
+calculate_QC <- function(seurat_object) {
+  # Calculate percent.mito
+  seurat_object[["percent.mito"]] <- PercentageFeatureSet(seurat_object, pattern = "^MT")
+  
+  # Calculate log10GenesPerUMI
+  seurat_object[["log10GenesPerUMI"]] <- log10(seurat_object$nFeature_RNA) / log10(seurat_object$nCount_RNA)
+  
+  return(seurat_object)
+}
+```
+
+### Generate QC Plots
+
+```{r}
+library(ggplot2)
+library(patchwork)
+
+generate_QC_plots <- function(seurat_object, datasetname) {
+  features_QC <- seurat_object@meta.data %>%
+    ggplot(aes(x = nFeature_RNA, color = sample, fill = sample)) +
+    geom_density(alpha = 0.2) +
+    theme_classic() +
+    geom_vline(xintercept = 200) +
+    ggtitle("# Features")
+
+  UMI_QC <- seurat_object@meta.data %>%
+    ggplot(aes(x = nCount_RNA, color = sample, fill = sample)) +
+    geom_density(alpha = 0.2) +
+    theme_classic() +
+    geom_vline(xintercept = 500) +
+    ggtitle("UMI")
+
+  mito_QC <- seurat_object@meta.data %>%
+    ggplot(aes(x = percent.mito, color = sample, fill = sample)) +
+    geom_density(alpha = 0.2) +
+    theme_classic() +
+    geom_vline(xintercept = 5) +
+    ggtitle("Percent Mitochondrial DNA")
+
+  genepUMI_QC <- seurat_object@meta.data %>%
+    ggplot(aes(x = log10GenesPerUMI, color = sample, fill = sample)) +
+    geom_density(alpha = 0.2) +
+    theme_classic() +
+    geom_vline(xintercept = 0.8) +
+    ggtitle("Log10 Genes per UMI")
+
+  qc_plot <- features_QC + UMI_QC + mito_QC + genepUMI_QC +
+    plot_layout(ncol = 2) +
+    plot_annotation(title = 'QC Distribution Plots by Sample for', datasetname)
+  
+  return(qc_plot)
+}
+```
+
+### Normalisation, Scaling and Variable Feature Analysis
+
+```{r}
+library(ggplot2)
+library(cowplot)
+
+process_object <- function(seurat_obj, normalization_method = "LogNormalize", scale_factor = 10000, selection_method = "vst", n_features = 2000) {
+  
+  # Normalize the data and find variable features
+  seurat_obj <- NormalizeData(seurat_obj, normalization.method = normalization_method, scale.factor = scale_factor)
+  seurat_obj <- FindVariableFeatures(seurat_obj, selection.method = selection_method, nfeatures = n_features)
+  
+  return(seurat_obj)
+}
+
+variable_plot <- function(seurat_obj) {
+
+  # Plot variable features
+    top10 <- head(VariableFeatures(seurat_obj), 10)
+    plot1 <- VariableFeaturePlot(seurat_obj)
+  #title("Variable Features in Gao, et. al Data")
+    LabelPoints(plot = plot1, points = top10, repel = TRUE)
+  
+  return(plot1)
+}
+```
+
+### Removing Low Quality and Low Expressed Genes
+
+```{r}
+
+remove_low <- function(seurat_object) {
+      # Identify low expressed genes and those in >10 cells:
+      gene_counts <- GetAssayData(object = seurat_object, slot = "counts")
+      nonzero_counts <- gene_counts > 0
+      genes_above_cutoff <- Matrix::rowSums(nonzero_counts) >= 10
+      filtered_counts <- gene_counts[genes_above_cutoff, ]
+      
+      # Create new Seurat object only with genes above cutoff
+      seurat_object <- CreateSeuratObject(filtered_counts, meta.data = seurat_object@meta.data)
+  
+      return(seurat_object)
+}
+```
+
+### Minimum PCs
+
+```{r}
+
+minpc_calc <- function(seurat_object, variance_threshold = 90, difference_threshold = 0.1) {
+  
+sd <- seurat_object[["pca"]]@stdev
+sd_sum <- sum(seurat_object[["pca"]]@stdev)
+percent_sd <- (sd / sd_sum) * 100
+cumsum <- cumsum(percent_sd)
+
+co1 <- which(cumsum > variance_threshold & percent_sd < 5)[1]
+co2 <- sort(which((percent_sd[1:length(percent_sd) - 1] - 
+                       percent_sd[2:length(percent_sd)]) > difference_threshold), 
+              decreasing = T)[1] + 1
+min.pc <- min(co1, co2)
+  
+  return(min.pc)
+}
+
+```
+
+# Processing
+
+Basic QC
+
+```{r}
+# QC Metrics - these will be added to your metadata:
+dataset1[["percent.mito"]] <- PercentageFeatureSet(dataset1, pattern = "^MT")
+dataset1[["log10GenesPerUMI"]] <- log10(dataset1$nFeature_RNA) / log10(dataset1$nCount_RNA)
+
+# Feel free to edit the cutoffs below:
+dataset1 <- subset(dataset1,
+                  subset = nCount_RNA > 500 &
+                  nFeature_RNA > 200 &
+                  log10GenesPerUMI > 0.8 &
+                  percent.mito < 5)
+
+dataset1 <- remove_low(dataset1) # remove low quality and low expressed genes
+
+# you can double check the QC worked by using the generate_QC_plots() function
+```
+
+## Cell Cycle Regression
+
+In the initial UMAP, it can be seen that two cell clusters are largely comprised of actively dividing cells, so we need to regress out variation due to cell state / cell cycle.
+
+```{r}
+# Method adapted from Satija lab:
+s_genes <- cc.genes$s.genes
+g2m_genes <- cc.genes$g2m.genes
+
+dataset1 <- CellCycleScoring(dataset1, s.features = s_genes, g2m.features = g2m_genes, set.ident = TRUE)
+
+dataset1 <- CellCycleScoring(dataset1, s.features = s_genes, g2m.features = g2m_genes, set.ident = TRUE) # this score will be used later when we scale the data
+```
+
+## QC, Scaling, and Variable Feature Analysis
+
+Scaling can sometimes take awhile and can be intensive on your computer, so make sure you have a chunk of time set aside when you are working on this.
+
+```{r}
+
+# Normalise and scale:
+dataset1 <- process_object(dataset1) # normalise data
+dataset1 <- FindVariableFeatures(dataset1) # find variable features
+
+# Scale data by all genes
+all_genes <- rownames(dataset1)
+dataset1 <- ScaleData(dataset1, vars.to.regress = c("S.Score", "G2M.Score", "percent.mito"), features = all_genes)
+# this code above will scale the data to prevent variation due to cell state - you will want to change this if you are looking at subsets of rapidly proliferating cells like stem cells/HSCs, etc.
+
+# Variable feature plot
+dataset1 <- FindVariableFeatures(dataset1)
+top10 <- head(VariableFeatures(dataset1), 10) # print top10 to see the top10 variable features
+plot1 <- VariableFeaturePlot(dataset1)
+LabelPoints(plot = plot1, points = top10, repel = TRUE)
+```
+
+# PCA
+
+```{r}
+# Complete PCA
+dataset1 <- RunPCA(dataset1, features = VariableFeatures(object = dataset1))
+
+ElbowPlot(dataset1) # elbow plot to help determine significant PCs
+
+# Find # of significant PCs
+min.pc <- minpc_calc(dataset1)
+```
+
+# Harmony Batch Correction
+
+```{r}
+# If harmony is not installed, uncomment lines below:
+#install.packages("harmony")
+
+library(harmony)
+
+options(repr.plot.height = 2.5, repr.plot.width = 6)
+dataset1 <- dataset1 %>% 
+    RunHarmony("sample", plot_convergence = TRUE)
+
+dim_1 <- DimPlot(dataset1, group.by = "sample") + ggtitle('DimPlot (w/o Harmony)')
+dim_2 <- DimPlot(dataset1, reduction = "harmony", group.by = "sample") + ggtitle('DimPlot (Harmony)')
+
+dim_1 + dim_2
+```
+
+# UMAP
+
+For useful tips on what kind of visualizations you can create in Seurat using your UMAP, check the useful resources section at the end.
+
+```{r}
+
+umap1 <- dataset1 %>% 
+    RunUMAP(reduction = "harmony", dims = 1:min.pc) %>% 
+    FindNeighbors(reduction = "harmony", dims = 1:min.pc) %>% 
+    FindClusters(resolution = 0.3)
+# change the resolution in FindClusters() to alter the clustering resolution. Acceptable ranges are usually 0.2-1.2
+# a lower resolution will yield less specific clusters.
+
+DimPlot(umap1, reduction = "umap", label = F)
+
+# uncomment line below to generate plot that splits by sample
+#DimPlot(umap1, reduction = "umap", label = TRUE, group.by = "sample")
+
+# uncomment line below to generate dimplot with to10 most variable features
+#DimPlot(umap1, features = top10)
+
+# or a dotplot!
+# DotPlot(umap1, features = top10) + RotatedAxis()
+```
+
+# Cluster Marker Analysis
+
+Labelling and identifying clusters is a bit more involved. Firstly, you will need to complete differential expression analysis using FindAllMarkers which will find markers for each cluster significantly different from other clusters.
+
+### Find All Markers
+
+```{r}
+markers <- FindAllMarkers(umap1, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+markers %>%
+    group_by(cluster) %>%
+    slice_max(n = 5, order_by = avg_log2FC)
+```
+
+### Cluster Identities
+
+```{r}
+# If you'd like to rename your clusters on your umap, use the below code and uncomment it. Make sure you have the same number of cluster names.
+
+# new.cluster.ids <- c("Cell Type 1", "Cell Type 2", "Cell Type 3", "Cell Type N")
+# names(new.cluster.ids) <- levels(umap1)
+# umap1 <- RenameIdents(umap1, new.cluster.ids)
+```
+
+### Specific Genes of Interest
+
+```{r}
+# If you have specific genes and want to know if they are variably expressed, use the below code and put the gene names in "features" as a list. 
+# A great way to find genes of interest is also to use FindVariableFeatures() on a datasubset where you restrict the features to only those of interest from a larger list.
+
+
+chem_markers <- FindAllMarkers(umap1, features = c("Gene1", "Gene2", "Gene3"), only.pos = TRUE, min.pct = 0.1, logfc.threshold = 0.25)
+chem_markers %>%
+    group_by(cluster) %>%
+    slice_max(n = 2, order_by = avg_log2FC)
+
+# If you'd like to make a dotplot with variable features:
+# DotPlot(umap1, features = c("Gene1", "Gene2", "Gene3")) + RotatedAxis()
+
+
+```
+
+# Misc Tasks
+
+## Generating New Metadata Columns
+
+If you'd like to generate new subsets to make graphs or visualise data based on, by creating new subsets (e.g. maybe clusters 1 and 2 are both immune cells, 3 and 4 are both cancer cell types, etc.), you can use the below code and simply uncomment the lines and replace the words with those relevant to your project.
+
+```{r}
+
+# Create categories using the clusters below - use the cluster numbers from the initial UMAP/marker analysis.
+#cancer_clusters <- c(1, 11)
+#immune_clusters <- c(0, 2, 3, 7, 8, 10, 16)
+
+# Below, change the names in quotations to generate a new column named "cell_type" - or replace it with any word you want for the column name!
+
+# Step 2: Create the new metadata variable based on the defined clusters
+#umap1$cell_type <- ifelse(umap1$seurat_clusters %in% cancer_clusters, "cancer",
+                     #             ifelse(umap1$seurat_clusters %in% #immune_clusters, "immune", "breast"))
+
+```
+
+## Rename Patient Subsets
+
+If you would prefer "cleaner" names e.g. P1 or Patient 1 instead of "Triple_negative_BRCA1_055", you can use the below code. The order of the subset names in "subset_names" will determine the index (ie. the first name will be P1 as its index in the list is 1). This data can be found in the metdata of your Seurat object.
+
+```{r}
+
+#subset_names <- c("Patient_1", "Patient_2")
+
+# Find the indices of the subsets in breastdata1 and rename them to P1 to PN:
+#subset_indices <- match(umap1$sample, subset_names)
+subset_indices[!is.na(subset_indices)] <- paste0("P", subset_indices[!is.na(subset_indices)])
+
+# Assign the renamed subset names to the breastdata1$Source column. Feel free to change the name from Source to anything you want:
+umap1$Source <- ifelse(!is.na(subset_indices), subset_indices, umap1$sample)
+
+```
+
+## Creating Subset for Further Analysis
+
+```{r}
+
+cell_clusters <- c(1, 11) # put all clusters with suspected cell populations of interest
+
+# Step 2: Create the new metadata variable based on the defined clusters
+seurat_object$cellcluster <- ifelse(seurat_object$seurat_clusters %in% cell_clusters, "cell_type", "other")
+
+datasetN <- subset(dataset1,
+                  subset = cytotoxic == "cell_type")
+
+# Run Normalisation, Scaling, PCA
+datasetN <- process_object(datasetN)
+datasetN <- FindVariableFeatures(datasetN)
+cyto_genes <- rownames(datasetN)
+datasetN <- ScaleData(datasetN, vars.to.regress = c("S.Score", "G2M.Score"), features = cyto_genes)
+datasetN <- RunPCA(datasetN, features = VariableFeatures(object = datasetN))
+options(repr.plot.height = 2.5, repr.plot.width = 6)
+datasetN <- datasetN %>% 
+    RunHarmony("sample", plot_convergence = TRUE)
+
+# Now this subset is ready for PCA, UMAP, etc. and further analysis! You can use the same workflow as above - just copy paste and change the dataset name.
+```
+
+# Useful Resources
+
+1.  [Data Visualization in Seurat](https://satijalab.org/seurat/articles/visualization_vignette.html)
+
+2.  [Basic Seurat Tutorial for scRNAseq](https://satijalab.org/seurat/articles/pbmc3k_tutorial)
+
+3.  [Using Seurat for multi modal data (e.g. CITEseq + scRNAseq).](https://satijalab.org/seurat/articles/multimodal_vignette.html)
